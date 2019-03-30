@@ -1,0 +1,334 @@
+import numpy as np
+from load_mnist import mnist
+from load_mnist import one_hot
+%matplotlib inline 
+import matplotlib.pyplot as plt
+import pdb
+import pandas as pd
+import sys, ast
+from sklearn.model_selection import train_test_split
+import pickle
+import gc
+
+#global count to save parameters to a file
+count=0
+
+#Function to load data from the mnist dataset files
+def load_data(filename1, filename2, type):
+    #Loading Train data
+    if type == 'train':
+        #Loading the training features for 60000 samples
+        loaded = np.fromfile(file=filename1, dtype=np.uint8)
+        trData = loaded[16:].reshape((60000, 28*28)).astype(float)
+        #Loading the training labels for 60000 samples
+        loaded = np.fromfile(filename2, dtype=np.uint8)
+        trLabels = loaded[8:].reshape(60000).astype(float)
+        return trData, trLabels
+    #Loading Test data
+    else:
+        #Loading the testing features for 10000 samples
+        loaded = np.fromfile(file=filename1, dtype=np.uint8)
+        tsData = loaded[16:].reshape((10000, 28 * 28)).astype(float)
+        #Loading the testing labels  for 10000 samples
+        loaded = np.fromfile(filename2, dtype=np.uint8)
+        tsLabels = loaded[8:].reshape((10000)).astype(float)
+        return tsData, tsLabels
+
+#Relu activation function for forward layer
+def relu(Z):
+    A = np.maximum(0,Z)
+    cache = {}
+    cache["Z"] = Z
+    return A, cache
+
+#Relu activation function for backward layer
+def relu_der(dA, cache):
+    dZ = np.array(dA, copy=True)
+    Z = cache["Z"]
+    dZ[Z<0] = 0
+    return dZ
+
+#Sigmoid activation function for forward layer
+def sigmoid(Z):
+    A = 1/(1+np.exp(-Z))
+    cache = {}
+    cache["Z"] = Z
+    return A, cache
+
+#Sigmoid activation function for backward layer
+def sigmoid_der(dA, cache):
+    tempA,temp = sigmoid(cache["Z"])
+    dZ = dA * tempA * (1-tempA)####newCode
+    return dZ
+
+#Calculate the mean squared error and Cross entropy loss from the orinial training data and reconstructed training data image, and original validation data and reconstruced validation data of the image
+def get_loss(AL,Y):
+    diff = AL - Y
+    '''Mean_Squared_Error'''
+    cost = np.mean(np.multiply(diff, diff))
+    '''Cross Entropy Loss'''
+    if Y.shape[1] == 0:
+        loss = []
+    else:
+        loss = -np.sum(Y*np.log(AL+1e-8))/ AL.shape[0]
+    return cost,diff,loss
+
+#Initialize the weights and baises based on the network nodes
+def initialize_multilayer_weights(net_dims):
+    np.random.seed(0)
+    numLayers = int(len(net_dims))
+    parameters = {}
+    for l in range(numLayers-1):
+        parameters["W"+str(l+1)] = (np.random.normal(0, np.sqrt(2.0/net_dims[l]),(net_dims[l],net_dims[l+1])))
+        parameters["b"+str(l+1)] = (np.random.normal(0, np.sqrt(2.0/net_dims[l]), (net_dims[l+1])))
+    return parameters
+
+#Forward layer to calculate dot product of data and weights and bias and storing this in cache for backward layer
+def linear_forward(A, W, b):
+    Z=np.dot(A,W) + b
+    cache = {}
+    cache["A"] = A
+    return Z, cache
+
+#Calculate the output of the layer and applying an activation function on that
+#3 different activation functions can be used
+def layer_forward(A_prev, W, b, activation):
+    Z, lin_cache = linear_forward(A_prev, W, b)
+    if activation == "relu":
+        A, act_cache = relu(Z)
+    elif activation == "linear":
+        A, act_cache = linear(Z)
+    elif activation == "sigmoid":
+        A, act_cache = sigmoid(Z)
+    
+    cache = {}
+    cache["lin_cache"] = lin_cache
+    cache["act_cache"] = act_cache
+    return A, cache
+
+#Multilayer forward layer using the single forward layers
+#In this, we have only a single hidden layer and a single output layer
+#We return the these caches and parameters with weight either to classify the data or to use it for the backward layer weight updating
+def multi_layer_forward(X, parameters):
+    L = len(parameters)//2
+    A = X
+    caches = []
+    for l in range(1,(L)):  # since there is no W0 and b0
+        A, cache = layer_forward(A, parameters["W"+str(l)], parameters["b"+str(l)], "sigmoid")
+        caches.append(cache)
+    AL, cache = layer_forward(A, parameters["W"+str(L)], parameters["b"+str(L)], "sigmoid")
+    caches.append(cache)
+    return AL, caches
+
+#Backward layer to calculate dot product of data and weights transpose and bias using them from cache from the forward layer
+def linear_backward(dZ, cache, W, b):
+    A= cache["A"]
+    dA_prev = np.dot(dZ,W.T)
+    dW = np.dot(A.T,dZ) / A.shape[0]
+    db = np.sum(dZ,axis = 0 , keepdims = True) / A.shape[1]
+    return dA_prev, dW, db
+
+#Calculate the output of the layer and applying an activation function on that
+#3 different activation functions can be used
+def layer_backward(dA, cache, W, b, activation):
+    lin_cache = cache["lin_cache"]
+    act_cache = cache["act_cache"]
+
+    if activation == "sigmoid":
+        dZ = sigmoid_der(dA, act_cache)
+    elif activation == "relu":
+        dZ = relu_der(dA, act_cache)
+    elif activation == "linear":
+        dZ = linear_der(dA, act_cache)
+    dA_prev, dW, db = linear_backward(dZ, lin_cache, W, b)
+    return dA_prev, dW, db
+
+#Multilayer backward layer using the single backward layers
+#In this, we have only a single hidden layer and a single output layer
+#We return the gradients that will be used for weight updation
+def multi_layer_backward(dAL, caches, parameters):
+    L = len(caches)  # with one hidden layer, L = 2
+    gradients = {}
+    dA = dAL
+    activation = "sigmoid"
+    for l in reversed(range(L,L+1)):
+        dA, gradients["dW"+str(l)], gradients["db"+str(l)] = \
+                    layer_backward(dA, caches[l-1], \
+                    parameters["W"+str(l)],parameters["b"+str(l)],\
+                    activation)
+        activation = "sigmoid"
+    
+    activation = "sigmoid"
+    for l in reversed(range(1,L)):
+        dA, gradients["dW"+str(l)], gradients["db"+str(l)] = \
+                    layer_backward(dA, caches[l-1], \
+                    parameters["W"+str(l)],parameters["b"+str(l)],\
+                    activation)
+        activation = "sigmoid"
+    return gradients
+
+# Using the final parameters from the trained model, using their weights an biases, we use the multilayer forward function to classify and reconstruct out data.
+def classify(X, parameters):
+    A , _ = multi_layer_forward(X, parameters)
+    return A
+
+#Updating the weights using the gradients, decreasing the learning rate using the decay rate
+def update_parameters(parameters, gradients, epoch, learning_rate, decay_rate=0.001):
+    alpha = learning_rate*(1/(1+decay_rate*epoch))
+    L = len(parameters)//2
+    for l in range(L):
+        parameters["W" + str(l+1)] = parameters["W" + str(l+1)] - alpha * gradients["dW"+ str(l+1)]
+        parameters["b" + str(l+1)] = parameters["b" + str(l+1)] - alpha * gradients["db"+ str(l+1)]
+    return parameters, alpha
+
+#A network using the forward and backward layers to train the model and return the parameters and print the validation results after every 10 iterations
+#This fucntion also prints a graph of training and validation costs
+def multi_layer_network(X, Y, val_data_noisy, val_data, net_dims,batch,noise,num_iterations=500, learning_rate=0.2, decay_rate=0.001):
+    parameters = initialize_multilayer_weights(net_dims)
+    A0 = X
+    costs = []
+    print("THe batch is",batch)
+    validation_error=[]
+    iteration_list=[]
+    mini_batch=batch
+    num_iterations=num_iterations
+    for ii in range(num_iterations):
+        X_mini=[]
+        #np.random.shuffle(A0)
+        for g in range(0, A0.shape[0], mini_batch):
+            X_mini=A0[g:g + mini_batch]
+            AL, caches = multi_layer_forward(A0, parameters)
+            cost,dz,loss=get_loss(AL,Y)
+            gradients = multi_layer_backward(dz, caches, parameters)
+            parameters,alpha = update_parameters(parameters, gradients, ii, learning_rate,decay_rate)
+        costs.append(cost)
+        train_output=classify(X,parameters)
+        val_output=classify(val_data_noisy,parameters)
+        cost_val,dz_val,loss_val=get_loss(val_output,val_data)
+        validation_error.append(cost_val)
+        
+        iteration_list.append(ii)
+        if ii % 10 == 0:
+            print("MSE Cost at iteration %i is: %.05f" %(ii, cost))
+            print("MSE Cost at iteration %i validation error is %.05f" %(ii,cost_val))
+            print("Cross entropy Cost at iteration %i is: %.05f" %(ii, loss))
+            print("Cross entropy Cost at iteration %i validation error is %.05f" %(ii,loss_val))
+            print("Train data noisy")
+            plt.imshow(X[0].reshape(28, 28))
+            plt.show()
+            print("Train data predicted")
+            plt.imshow(train_output[0].reshape(28, 28))
+            plt.show()
+            print("validation data noisy")
+            plt.imshow(val_data[0].reshape(28, 28))
+            plt.show()
+            print("validation data predicted")
+            plt.imshow(val_output[0].reshape(28, 28))
+            plt.show()
+            
+    plt.plot(iteration_list, costs, label="Training data", linestyle='solid', color="red")
+    plt.plot(iteration_list, validation_error, label="Validation data", linestyle='solid', color="blue")
+    plt.xlabel("Iterations")
+    plt.ylabel("Loss")
+    plt.title("Training and Validation Loss for 1000 hidden nodes for " +str(num_iterations) +" iterations,noise is : "+noise)
+    plt.legend(['Training data','Validation data'])
+    plt.show()   
+    
+    return costs, parameters, validation_error
+
+#returns a gaussian noisy data of the normal data
+def noisy_data(X):
+    # creating the noisy test data by adding X with noise
+    n_rows = X.shape[0]
+    n_cols = X.shape[1]
+    mean = 0.5
+    stddev = 0.3
+    noise = np.random.normal(mean, stddev, (n_rows, n_cols))
+    return (X + (noise*0.5))
+
+#returns a speckle noisy data of the normal data    
+def add_speckle_noise(data):
+    gauss = np.random.randn(data.shape[0],data.shape[1])
+    gauss = gauss.reshape(data.shape[0],data.shape[1])
+    noisy = data + (data * gauss)*0.25
+    return noisy
+
+#returns a poisson noisy data of the normal data    
+def add_poisson_noise(data):
+    vals = len(np.unique(data))
+    vals = 2 ** np.ceil(np.log2(vals))
+    noisy = np.random.poisson(data * ((vals)*0.25)) / (float(vals)*0.25)
+    return noisy
+
+#The main function to load the data
+#Using the functions above to train an AutoEncoder, save the parameters to a file and classify and reconstruct a noisy test images dataset and get a less noisy result 
+def main(noise,hidden_nodes,learning_rate,batch,iterations):
+    n_in= 784
+    n_h1 = hidden_nodes #hidden_nodes
+    net_dims = [n_in, n_h1]
+    
+    net_dims.append(784) # Adding the digits layer with dimensionality = 10
+    print("Network dimensions are:" + str(net_dims))
+    learning_rate = learning_rate
+    print("learning Rate is: ",learning_rate)
+    num_iterations = iterations
+    data_directory = './mnist/'
+    train, train_label = load_data(data_directory + "train-images-idx3-ubyte", data_directory +"train-labels-idx1-ubyte", 'train')
+    test_data, test_label = load_data(data_directory + "t10k-images-idx3-ubyte", data_directory +"t10k-labels-idx1-ubyte", 'test')
+    train_x = train / 255
+    
+    ## create train and validation datasets
+    train_x, val_x, = train_test_split(train_x, test_size=0.2)
+    ## reshape the inputs
+    train_x = train_x.reshape(-1, 784)
+    val_x = val_x.reshape(-1, 784)
+    train_data=train_x
+    val_data=val_x
+    if(noise=='gaussian'):
+        train_data_noisy=noisy_data(train_data)
+        test_data_noisy=noisy_data(test_data)
+        val_data_noisy=noisy_data(val_data)
+    elif(noise=='speckle'):
+        train_data_noisy=add_speckle_noise(train_data)
+        test_data_noisy=add_speckle_noise(test_data)
+        val_data_noisy=add_speckle_noise(val_data)
+    elif(noise=='poisson'):
+        train_data_noisy=add_poisson_noise(train_data)
+        test_data_noisy=add_poisson_noise(test_data)
+        val_data_noisy=add_poisson_noise(val_data)   
+    decay_rate=0.001
+
+    costs, parameters, validation_error = multi_layer_network(train_data_noisy, train_data, val_data_noisy, val_data, net_dims, batch, noise, num_iterations, learning_rate,decay_rate)
+    global count
+    dict_parameters={"parameters" : parameters}
+    pickle_out= open("parameters"+str(count)+".pickle","wb")
+    pickle.dump(dict_parameters,pickle_out)
+    pickle_out.close()
+    count+=1
+    
+    # compute the ouput for training set and testing set
+    train_Pred = classify(train_data_noisy, parameters)    
+    test_Pred = classify(test_data_noisy, parameters)
+    
+    print('Train data noiseless and noisy')
+    plt.imshow(train_data[0].reshape(28, 28))
+    plt.show()
+    plt.imshow(train_data_noisy[0].reshape(28, 28))
+    plt.show()
+    plt.imshow(train_Pred[0].reshape(28, 28))
+    plt.show()
+     
+    print('Val data noiseless and noisy')
+    plt.imshow(test_data[0].reshape(28, 28))
+    plt.show()
+    plt.imshow(test_data_noisy[0].reshape(28, 28))
+    plt.show()
+    plt.imshow(test_Pred[0].reshape(28, 28))
+    plt.show()
+    gc.collect()
+
+if __name__=="__main__":
+    gc.collect()
+    print("noise: poisson, hidden_nodes: 1000, learning_rate : 0.1, batch : 60000, number of iteration : 100")
+    #The main has the format(type of noise[poisson,gauss,speckle],nodes in the hidden layer,batch size, epochs)
+    main("poisson",1000,0.1,60000,100)
